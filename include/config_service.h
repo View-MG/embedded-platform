@@ -10,7 +10,7 @@ public:
 
     void sendFloat(const String& path, float value);
     float readFloat(const String& path);
-    
+
     void sendBool(const String& path, bool value);
     bool readBool(const String& path);
 
@@ -18,6 +18,7 @@ public:
     void sendString(const String &path, const String &value);
 
     FirebaseData fbdo;
+
 private:
     FirebaseAuth auth;
     FirebaseConfig config;

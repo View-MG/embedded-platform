@@ -1,72 +1,48 @@
 #include <Arduino.h>
-#include "config_service.h"
-#include "sensor_service.h" 
-#include "motor_control.h"
-#include "audio_service.h"
-#include "log_service.h"
 #include <time.h>
-#include "audio_upload_service.h"
+#include "config_service.h"
+#include "sensor_service.h"
+#include "motor_control.h"
+#include "log_service.h"
 
+// Services ที่ใช้
 ConfigService config;
 SensorService sensor;
 MotorControl motor;
-AudioService audio;
-AudioUploadService* audioUploader;
 LogService* logger;
 
-#define CHUNK_SAMPLES 1024
-int32_t buffer[CHUNK_SAMPLES];
-
+// สำหรับ Log
 unsigned long lastLogTime = 0;
 const unsigned long LOG_INTERVAL = 30000; // 30 วินาที
 
-void initTime() {
-    configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
-    delay(2000);
-}
-
 void setup() {
-    Serial.begin(115225);
+    Serial.begin(115200);
+
     config.beginWiFi();
     config.beginFirebase();
 
-    initTime();
-
+    motor.begin(&config);
     sensor.begin();
-    motor.begin();
-    audio.begin();
 
     logger = new LogService(&config);
     logger->begin();
 
-    // audioUploader = new AudioUploadService(&config, &audio);
-    // audioUploader->begin();
-    // audioUploader->startRecording();
-
     Serial.println("[System] Ready");
 }
 
-
 void loop() {
-    bool button = sensor.getButton();
-    float tilt  = sensor.getTiltDegree();
-    float water = sensor.getWaterLevel();
-    float humidity = sensor.getHumidity();
     float temperature = sensor.getTemperature();
+    float humidity    = sensor.getHumidity();
+    float water       = sensor.getWaterLevel();
+    bool tilted       = (sensor.getTiltDegree() > 0);
+    bool button       = sensor.getButton();
 
-    // ส่งขึ้น Firebase Realtime Database
-    config.sendBool("/sensor/button", button);
-    config.sendFloat("/sensor/tilt", tilt);
-    config.sendFloat("/sensor/water", water);
-    config.sendFloat("/sensor/humidity", humidity);
-    config.sendFloat("/sensor/temp", temperature);
+    // ควบคุมมอเตอร์ (ใช้ข้อมูล tilt เพื่อ safety)
+    motor.update(true);
 
-    // Motor Logic
-    motor.handleLogic(water, tilt > 0, button);
-
-    // Log to Firestore every 30 seconds
-    if (millis() - lastLogTime >= LOG_INTERVAL) {
-        logger->writeLog(temperature, humidity, water, tilt, button);
+    // Log ทุก 30 วินาที
+    if (millis() - lastLogTime > LOG_INTERVAL) {
+        logger->writeLog(temperature, humidity, water, sensor.getTiltDegree(), button);
         lastLogTime = millis();
     }
 

@@ -20,14 +20,10 @@ void ConfigService::beginFirebase() {
     config.api_key = FIREBASE_API_KEY;
     config.database_url = FIREBASE_DATABASE_URL;
 
-    auth.user.email = "";
-    auth.user.password = "";
-
     if (Firebase.signUp(&config, &auth, "", "")) {
         Serial.println("[Firebase] sign-up OK");
     } else {
-        Serial.print("[Firebase] sign-up FAILED: ");
-        Serial.println(config.signer.signupError.message.c_str());
+        Serial.println("[Firebase] sign-up FAILED");
     }
 
     delay(800);
@@ -39,9 +35,8 @@ void ConfigService::beginFirebase() {
 }
 
 void ConfigService::sendFloat(const String& path, float value) {
-    if (Firebase.ready()) {
+    if (Firebase.ready())
         Firebase.RTDB.setFloat(&fbdo, path.c_str(), value);
-    }
 }
 
 float ConfigService::readFloat(const String& path) {
@@ -68,16 +63,12 @@ void ConfigService::sendString(const String &path, const String &value) {
 
 String ConfigService::readString(const String& path) {
     if (!Firebase.ready()) return "";
-    
+
     if (Firebase.RTDB.getString(&fbdo, path.c_str())) {
         String value = fbdo.stringData();
-        
-        // ✅ ลบ quotes ออก ถ้ามี
         value.trim();
-        if (value.startsWith("\"") && value.endsWith("\"")) {
+        if (value.startsWith("\"") && value.endsWith("\""))
             value = value.substring(1, value.length() - 1);
-        }
-        
         return value;
     }
     return "";
