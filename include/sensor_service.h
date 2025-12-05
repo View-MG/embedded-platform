@@ -22,5 +22,4 @@ private:
     SensorWater water;
     SensorTilt tilt;
     SensorButton button;
-
 };
