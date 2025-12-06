@@ -5,99 +5,52 @@
 #include "control/fan.h"
 #include "control/steam.h"
 #include "audio.h" 
-#include "log.h"   
 
-// --- Objects ---
 GatewayNetwork network;
 AudioService audio;
 FanLogic fanLogic(&network);
 SteamLogic steamLogic(&network);
-LogService logger(&network); 
 
-// --- Data ---
 SensorPacket currentSensorData;
 bool isSensorDataNew = false;
 
-// --- Timers ---
-unsigned long lastLogicTime = 0;
-unsigned long lastLogTime = 0;
-
-// ==========================================
-// 🚀 FreeRTOS Task: สำหรับ Audio โดยเฉพาะ
-// ==========================================
 TaskHandle_t AudioTaskHandle;
 
+// AUDIO TASK (CORE 0)
 void AudioTask(void * parameter) {
-    Serial.println("[System] Audio Task Started on Core 0");
-    
-    // Loop นี้จะทำงานแยกอิสระ ไม่สน main loop
-    while(true) {
-        if (ENABLE_AUDIO_STREAM) {
-            audio.loop(); 
-        }
-        
-        // ใส่ delay สั้นมากๆ เพื่อให้ Watchdog Timer ไม่ทำงานผิดพลาด (สำคัญ)
-        // 1 tick ประมาณ 1ms ซึ่งอาจจะทำให้เสียงขาดนิดหน่อย
-        // แต่ถ้าไม่ใส่เลย Task อาจจะกิน CPU จนระบบรวน
-        // ลองใส่ 1 ก่อน ถ้าเสียงกระตุก ให้ลองเอาออก หรือใช้ vTaskDelay(0);
-        vTaskDelay(1 / portTICK_PERIOD_MS); 
+    Serial.println("[Audio] Task Running on CORE 0");
+    while(true){
+        audio.loop();          // Non-blocking already
+        vTaskDelay(1);         // WDT Safe
     }
 }
 
 void setup() {
     Serial.begin(115200);
 
-    // 1. Init Network
-    network.begin();
+    network.begin();           // WiFi + Firebase + ESP-NOW
 
-    // 2. Init Audio Hardware
-    if (ENABLE_AUDIO_STREAM) {
-        audio.begin();
-    }
+    if(ENABLE_AUDIO_STREAM){
+        audio.begin();         // Init I2S + WebSocket
 
-    // 3. Init Time
-    configTime(7 * 3600, 0, "pool.ntp.org");
-    Serial.println("[Gateway] System Started");
-
-    // -----------------------------------------------------------
-    // 4. สร้าง Task แยกไปรันที่ Core 0
-    // -----------------------------------------------------------
-    if (ENABLE_AUDIO_STREAM) {
         xTaskCreatePinnedToCore(
-            AudioTask,      // ฟังก์ชัน Task
-            "AudioTask",    // ชื่อ Task
-            10000,          // Stack Size (10kb น่าจะพอ)
-            NULL,           // Parameter
-            1,              // Priority (1 = สูงกว่า Idle)
-            &AudioTaskHandle, // Handle
-            0               // Run on Core 0 (Main loop อยู่ Core 1)
+            AudioTask, "AudioTask", 10000,
+            NULL, 1, &AudioTaskHandle, 0          // ← CORE 0
         );
     }
+
+    configTime(7*3600, 0,"pool.ntp.org");
+    Serial.println("\n[System] Boot Completed");
 }
 
 void loop() {
-    // -----------------------------------------------------------
-    // Core 1: ทำงาน Logic + Firebase + ESP-NOW
-    // (Audio ถูกย้ายออกไปแล้ว ไม่ต้องใส่ตรงนี้)
-    // -----------------------------------------------------------
+    static unsigned long lastLogic=0;
 
-    time_t now = time(nullptr);
+    if(millis()-lastLogic > LOGIC_INTERVAL_MS){
+        lastLogic = millis();
 
-    // 1. Process Logic (ทุก 1 วินาที)
-    if (millis() - lastLogicTime > LOGIC_INTERVAL_MS) {
-        lastLogicTime = millis();
-        
-        // ช่วงนี้ Firebase อาจจะดึงเวลาไป 1-2 วิ
-        // แต่ Audio บน Core 0 จะยังทำงานต่อได้ ไม่หลุด!
-        fanLogic.update(now, currentSensorData);
-        steamLogic.update(now, currentSensorData);
-        
-        isSensorDataNew = false; 
+        time_t now = time(nullptr);
+        fanLogic.update(now,currentSensorData);
+        steamLogic.update(now,currentSensorData);
     }
-
-    // 2. Data Logging (ทุก 30 วินาที)
-    // if (millis() - lastLogTime > LOG_INTERVAL_MS) {
-    //     lastLogTime = millis();
-    //     logger.writeLog(currentSensorData); 
-    // }
 }
