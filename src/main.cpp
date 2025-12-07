@@ -5,23 +5,22 @@
 #include "control/control.h"
 #include "audio.h"
 
-// ===== Global shared with gateway.h =====
+// shared กับ gateway.h
 SensorPacket currentSensorData;
 bool isSensorDataNew = false;
 
-// ===== Objects =====
-GatewayNetwork network;
-AudioService   audio;
-ControlLogic   control(&network);
+GatewayNetwork    network;
+AudioService      audio;
+EnvSensorService  env;                // <- ใหม่
+ControlLogic      control(&network, &env);
 
 TaskHandle_t AudioTaskHandle;
 
-// AUDIO TASK (CORE 0)
 void AudioTask(void * parameter) {
     Serial.println("[Audio] Task Running on CORE 0");
     while (true) {
         audio.loop();
-        vTaskDelay(1);   // ป้องกัน WDT
+        vTaskDelay(1);  
     }
 }
 
@@ -29,20 +28,14 @@ void setup() {
     Serial.begin(115200);
     delay(500);
 
-    network.begin();   // WiFi + Firebase + ESP-NOW
-    control.begin();   // init DHT11
+    network.begin();
+    control.begin();      // ภายในจะเรียก env.begin()
 
     if (ENABLE_AUDIO_STREAM) {
-        audio.begin(); // I2S + WebSocket
-
+        audio.begin();
         xTaskCreatePinnedToCore(
-            AudioTask,
-            "AudioTask",
-            10000,
-            NULL,
-            1,
-            &AudioTaskHandle,
-            0        // CORE 0
+            AudioTask, "AudioTask", 10000,
+            NULL, 1, &AudioTaskHandle, 0
         );
     }
 
@@ -57,7 +50,6 @@ void loop() {
         lastLogic = millis();
 
         time_t now = time(nullptr);
-        // ใช้ currentSensorData ตัวเดียว (update จาก ESP-NOW callback)
         control.update(now, currentSensorData);
     }
 }

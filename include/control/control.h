@@ -4,11 +4,12 @@
 #include <math.h>
 #include "gateway.h"
 #include "constant.h"
-#include <DHT.h>
+#include "sensor/sensor.h"    // <- DHT (KY-015) logic แยกออกมาแล้ว
 
 class ControlLogic {
 private:
-    GatewayNetwork* net;
+    GatewayNetwork*   net;
+    EnvSensorService* env;    // ใช้ข้อมูล T/H จากคลาสใหม่
 
     // ---------- CONFIG จาก Firebase ----------
     String mode = "manual";   // "manual" / "auto"
@@ -38,21 +39,10 @@ private:
     // countdown schedule
     unsigned long lastCountdownUpdate = 0;
 
-    // ---------- ENV (KY-015 DHT11) ----------
-    DHT dht;
-    bool   envReady      = false;
-    float  curTemp       = 0.0f;
-    float  curHum        = 0.0f;
-    float  lastTempSent  = 0.0f;
-    float  lastHumSent   = 0.0f;
-    bool   envPushedOnce = false;
-    unsigned long lastEnvRead  = 0;
-    unsigned long lastEnvPush  = 0;
-
     // ---------- Sensor push -> Firebase ----------
-    SensorPacket lastSensor{};
-    bool         hasLastSensor   = false;
-    unsigned long lastSensorPush = 0;
+    SensorPacket   lastSensor{};
+    bool           hasLastSensor   = false;
+    unsigned long  lastSensorPush  = 0;
 
     // ---------- helper: เวลา ----------
     int parseHHMM(const String& s) {
@@ -129,7 +119,7 @@ private:
             }
         }
 
-        if (shouldUpdate) {
+        if (shouldUpdate && fb != nullptr) {
             Firebase.RTDB.setInt(fb, PATH_SCHED_COUNTDOWN, diff);
             lastCountdownUpdate = millis();
             Serial.printf("[Schedule] Countdown = %d sec\n", diff);
@@ -146,6 +136,7 @@ private:
     // ---------- อ่าน config จาก Firebase ----------
     void fetchConfig(FirebaseData* fb) {
         if (millis() - lastCfg < CONFIG_POLL_MS) return;
+        if (!fb) return;
 
         // mode
         if (Firebase.RTDB.getString(fb, PATH_CTRL_MODE))
@@ -188,54 +179,12 @@ private:
         lastCfg = millis();
     }
 
-    // ---------- อ่าน DHT11 + push Firebase ----------
-    void updateEnv(FirebaseData* fb) {
-        if (millis() - lastEnvRead < ENV_POLL_MS) return;
-        lastEnvRead = millis();
-
-        float h = dht.readHumidity();
-        float t = dht.readTemperature();
-
-        if (isnan(h) || isnan(t)) {
-            Serial.println("[Env] DHT read failed");
-            return;
-        }
-
-        envReady = true;
-        curHum   = h;
-        curTemp  = t;
-
-        bool push = false;
-        if (!envPushedOnce) {
-            push = true;
-        } else {
-            if (fabsf(h - lastHumSent) >= 1.0f ||
-                fabsf(t - lastTempSent) >= 0.5f) {
-                push = true;
-            } else if (millis() - lastEnvPush > SENSOR_PUSH_MS) {
-                push = true;
-            }
-        }
-
-        if (push) {
-            Firebase.RTDB.setFloat(fb, PATH_SENSOR_TEMP, curTemp);
-            Firebase.RTDB.setFloat(fb, PATH_SENSOR_HUMID, curHum);
-            lastTempSent   = curTemp;
-            lastHumSent    = curHum;
-            lastEnvPush    = millis();
-            envPushedOnce  = true;
-
-            Serial.printf("[Env]  T=%.1f°C H=%.1f%%\n", curTemp, curHum);
-        }
-    }
-
     // ---------- push Sensor Node data -> Firebase ----------
     void pushSensorToFirebase(const SensorPacket &d, FirebaseData* fb) {
-        // ข้ามถ้ายังไม่มี nodeId
+        if (!fb) return;
         if (d.nodeId == 0) return;
 
         bool changed = false;
-
         if (!hasLastSensor ||
             d.waterPercent != lastSensor.waterPercent ||
             d.waterRaw     != lastSensor.waterRaw ||
@@ -271,23 +220,22 @@ private:
     }
 
 public:
-    ControlLogic(GatewayNetwork* n)
-        : net(n), dht(DHT_PIN, DHT_TYPE) {}
+    ControlLogic(GatewayNetwork* n, EnvSensorService* e)
+        : net(n), env(e) {}
 
     void begin() {
-        dht.begin();
-        Serial.println("[Env] DHT11 init");
+        if (env) env->begin();
     }
 
     void update(time_t now, SensorPacket &d) {
-        if (!net->ok()) return;
+        if (!net || !net->ok()) return;
         FirebaseData* fb = net->get();
 
         // 1) อ่าน config จาก Firebase
         fetchConfig(fb);
 
-        // 2) อ่าน DHT11 + push env ขึ้น Firebase
-        updateEnv(fb);
+        // 2) อัปเดต DHT11 + push env ขึ้น Firebase
+        if (env) env->update(fb);
 
         // 3) push ข้อมูลจาก Sensor Node ขึ้น Firebase
         pushSensorToFirebase(d, fb);
@@ -323,10 +271,12 @@ public:
             if (mode == "manual") {
                 want = manual;
             } else if (mode == "auto") {
-                bool hasHumidity = envReady && !isnan(curHum) && curHum > 0;
+                float h = (env ? env->getHumidity() : NAN);
+                bool hasHumidity = env && env->isReady() && !isnan(h) && h > 0.0f;
+
                 if (hasHumidity) {
                     // แห้งกว่า target → เปิด
-                    want = (curHum < (float)targetHumid);
+                    want = (h < (float)targetHumid);
                 } else {
                     want = false; // ไม่มีค่า humidity → ปิดไว้ก่อนเพื่อความปลอดภัย
                 }
@@ -363,7 +313,7 @@ public:
         // 8) feedback จาก Sensor: sync control_state
         bool fbState = d.controlState;
         if (fbState != lastFb) {
-            Firebase.RTDB.setBool(fb, PATH_CTRL_STATE, fbState);
+            if (fb) Firebase.RTDB.setBool(fb, PATH_CTRL_STATE, fbState);
             lastFb     = fbState;
             lastFbTime = millis();
         }
@@ -387,7 +337,7 @@ public:
                     mismatchCount = 0;
 
                     // ถ้าอยู่ใน manual → sync manual_state ให้ตรงกับของจริง
-                    if (mode == "manual") {
+                    if (mode == "manual" && fb) {
                         manual = real;
                         Firebase.RTDB.setBool(fb, PATH_CTRL_MANUAL, real);
                         Serial.printf("[AUTO-SYNC] Update PATH_CTRL_MANUAL to %s\n",
